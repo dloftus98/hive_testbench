@@ -1,7 +1,7 @@
 #!/bin/bash
 
 function usage {
-	echo "Usage: tpcds-setup.sh scale_factor [temp_directory]"
+	echo "Usage: tpcds-setup.sh dataset_name format scale_factor [temp_directory]"
 	exit 1
 }
 
@@ -28,8 +28,11 @@ DIMS="date_dim time_dim item customer customer_demographics household_demographi
 FACTS="store_sales store_returns web_sales web_returns catalog_sales catalog_returns inventory"
 
 # Get the parameters.
-SCALE=$1
-DIR=$2
+DATASET_NAME=$1
+FORMAT=$2
+SCALE=$3
+DIR=$4
+
 if [ "X$BUCKET_DATA" != "X" ]; then
 	BUCKETS=13
 	RETURN_BUCKETS=13
@@ -45,6 +48,12 @@ fi
 if [ X"$SCALE" = "X" ]; then
 	usage
 fi
+if [ X"$DATASET_NAME" = "X" ]; then
+	usage
+fi
+if [ X"$FORMAT" = "X" ]; then
+	usage
+fi
 if [ X"$DIR" = "X" ]; then
 	DIR=/tmp/tpcds-generate
 fi
@@ -54,13 +63,13 @@ if [ $SCALE -eq 1 ]; then
 fi
 
 # Do the actual data load.
-hdfs dfs -mkdir -p ${DIR}
-hdfs dfs -ls ${DIR}/${SCALE} > /dev/null
+hdfs dfs -mkdir -p ${DIR}/${DATASET_NAME}
+hdfs dfs -ls ${DIR}/${DATASET_NAME}/${SCALE} > /dev/null
 if [ $? -ne 0 ]; then
 	echo "Generating data at scale factor $SCALE."
-	(cd tpcds-gen; hadoop jar target/*.jar -d ${DIR}/${SCALE}/ -s ${SCALE})
+	(cd tpcds-gen; hadoop jar target/*.jar -d ${DIR}/${DATASET_NAME}/${SCALE}/ -s ${SCALE})
 fi
-hdfs dfs -ls ${DIR}/${SCALE} > /dev/null
+hdfs dfs -ls ${DIR}/${DATASET_NAME}/${SCALE} > /dev/null
 if [ $? -ne 0 ]; then
 	echo "Data generation failed, exiting."
 	exit 1
@@ -69,14 +78,14 @@ echo "TPC-DS text data generation complete."
 
 # Create the text/flat tables as external tables. These will be later be converted to ORCFile.
 echo "Loading text data into external tables."
-runcommand "hive -i settings/load-flat.sql -f ddl-tpcds/text/alltables.sql -d DB=tpcds_text_${SCALE} -d LOCATION=${DIR}/${SCALE}"
+runcommand "hive -i settings/load-flat.sql -f ddl-tpcds/text/alltables.sql -d DB=tpcds_text_${DATASET_NAME}_${SCALE} -d LOCATION=${DIR}/${DATASET_NAME}/${SCALE}"
 
 # Create the partitioned and bucketed tables.
-if [ "X$FORMAT" = "X" ]; then
-	FORMAT=orc
-fi
+#if [ "X$FORMAT" = "X" ]; then
+#	FORMAT=orc
+#fi
 
-LOAD_FILE="load_${FORMAT}_${SCALE}.mk"
+LOAD_FILE="load_${DATASET_NAME}_${FORMAT}_${SCALE}.mk"
 SILENCE="2> /dev/null 1> /dev/null" 
 if [ "X$DEBUG_SCRIPT" != "X" ]; then
 	SILENCE=""
@@ -86,7 +95,7 @@ echo -e "all: ${DIMS} ${FACTS}" > $LOAD_FILE
 
 i=1
 total=24
-DATABASE=tpcds_bin_partitioned_${FORMAT}_${SCALE}
+DATABASE=tpcds_bin_partitioned_${DATASET_NAME}_${FORMAT}_${SCALE}
 MAX_REDUCERS=2500 # maximum number of useful reducers for any scale 
 REDUCERS=$((test ${SCALE} -gt ${MAX_REDUCERS} && echo ${MAX_REDUCERS}) || echo ${SCALE})
 
@@ -94,7 +103,7 @@ REDUCERS=$((test ${SCALE} -gt ${MAX_REDUCERS} && echo ${MAX_REDUCERS}) || echo $
 for t in ${DIMS}
 do
 	COMMAND="hive -i settings/load-partitioned.sql -f ddl-tpcds/bin_partitioned/${t}.sql \
-	    -d DB=tpcds_bin_partitioned_${FORMAT}_${SCALE} -d SOURCE=tpcds_text_${SCALE} \
+	    -d DB=tpcds_bin_partitioned_${DATASET_NAME}_${FORMAT}_${SCALE} -d SOURCE=tpcds_text_${DATASET_NAME}_${SCALE} \
             -d SCALE=${SCALE} \
 	    -d FILE=${FORMAT}"
 	echo -e "${t}:\n\t@$COMMAND $SILENCE && echo 'Optimizing table $t ($i/$total).'" >> $LOAD_FILE
@@ -104,7 +113,7 @@ done
 for t in ${FACTS}
 do
 	COMMAND="hive -i settings/load-partitioned.sql -f ddl-tpcds/bin_partitioned/${t}.sql \
-	    -d DB=tpcds_bin_partitioned_${FORMAT}_${SCALE} \
+	    -d DB=tpcds_bin_partitioned_${DATASET_NAME}_${FORMAT}_${SCALE} \
             -d SCALE=${SCALE} \
 	    -d SOURCE=tpcds_text_${SCALE} -d BUCKETS=${BUCKETS} \
 	    -d RETURN_BUCKETS=${RETURN_BUCKETS} -d REDUCERS=${REDUCERS} -d FILE=${FORMAT}"
