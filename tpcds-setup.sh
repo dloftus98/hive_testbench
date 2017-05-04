@@ -1,5 +1,7 @@
 #!/bin/bash
 
+DEBUG_SCRIPT=true
+
 function usage {
 	echo "Usage: tpcds-setup.sh dataset_name format scale_factor [temp_directory]"
 	exit 1
@@ -102,25 +104,35 @@ REDUCERS=$((test ${SCALE} -gt ${MAX_REDUCERS} && echo ${MAX_REDUCERS}) || echo $
 # Populate the smaller tables.
 for t in ${DIMS}
 do
-	COMMAND="hive -i settings/load-partitioned.sql -f ddl-tpcds/bin_partitioned/${t}.sql \
+	LOAD_COMMAND="hive -i settings/load-partitioned.sql -f ddl-tpcds/bin_partitioned/${t}.sql \
 	    -d DB=tpcds_bin_partitioned_${DATASET_NAME}_${FORMAT}_${SCALE} -d SOURCE=tpcds_text_${DATASET_NAME}_${SCALE} \
             -d SCALE=${SCALE} \
 	    -d FILE=${FORMAT}"
-	echo -e "${t}:\n\t@$COMMAND $SILENCE && echo 'Optimizing table $t ($i/$total).'" >> $LOAD_FILE
+        INVALIDATE_COMMAND="impala-shell -q \"invalidate metadata ${DATABASE}.${t};\""
+        STATS_COMMAND="impala-shell -q \"compute stats ${DATABASE}.${t};\""
+	echo -e "${t}:\n\t@$LOAD_COMMAND $SILENCE && echo 'Loading table $t ($i/$total).'" >> $LOAD_FILE
+        echo -e "\t@$INVALIDATE_COMMAND $SILENCE && echo 'Invalidating metadata for $DATABASE.$t'" >> $LOAD_FILE
+        echo -e "\t@sleep 5s $SILENCE && echo 'sleeping to give invalidate metadata time to complete'" >> $LOAD_FILE
+        echo -e "\t@$STATS_COMMAND $SILENCE && echo 'Computing stats for table $t ($i/$total).'" >> $LOAD_FILE
 	i=`expr $i + 1`
 done
 
 for t in ${FACTS}
 do
-	COMMAND="hive -i settings/load-partitioned.sql -f ddl-tpcds/bin_partitioned/${t}.sql \
+	LOAD_COMMAND="hive -i settings/load-partitioned.sql -f ddl-tpcds/bin_partitioned/${t}.sql \
 	    -d DB=tpcds_bin_partitioned_${DATASET_NAME}_${FORMAT}_${SCALE} \
             -d SCALE=${SCALE} \
-	    -d SOURCE=tpcds_text_${SCALE} -d BUCKETS=${BUCKETS} \
-	    -d RETURN_BUCKETS=${RETURN_BUCKETS} -d REDUCERS=${REDUCERS} -d FILE=${FORMAT}"
-	echo -e "${t}:\n\t@$COMMAND $SILENCE && echo 'Optimizing table $t ($i/$total).'" >> $LOAD_FILE
+	    -d SOURCE=tpcds_text_${DATASET_NAME}_${SCALE} -d BUCKETS=${BUCKETS} \
+	    -d RETURN_BUCKETS=${RETURN_BUCKETS} -d FILE=${FORMAT}"
+        INVALIDATE_COMMAND="impala-shell -q \"invalidate metadata ${DATABASE}.${t};\""
+        STATS_COMMAND="impala-shell -q \"compute stats ${DATABASE}.${t};\""
+	echo -e "${t}:\n\t@$LOAD_COMMAND $SILENCE && echo 'Loading table $t ($i/$total).'" >> $LOAD_FILE
+        echo -e "\t@$INVALIDATE_COMMAND $SILENCE && echo 'Invalidating metadata for $DATABASE.$t'" >> $LOAD_FILE
+        echo -e "\t@sleep 10s $SILENCE && echo 'sleeping to give invalidate metadata time to complete'" >> $LOAD_FILE
+        echo -e "\t@$STATS_COMMAND $SILENCE && echo 'Computing stats for table $t ($i/$total).'" >> $LOAD_FILE
 	i=`expr $i + 1`
 done
 
-make -j 2 -f $LOAD_FILE
+make -j 3 -f $LOAD_FILE
 
 echo "Data loaded into database ${DATABASE}."
